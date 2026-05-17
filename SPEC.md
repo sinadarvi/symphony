@@ -19,13 +19,15 @@ Symphony is a long-running automation service that continuously reads work from 
 (Linear in this specification version), creates an isolated workspace for each issue, and runs a
 coding agent session for that issue inside the workspace.
 
-The service solves four operational problems:
+The service solves five operational problems:
 
 - It turns issue execution into a repeatable daemon workflow instead of manual scripts.
 - It isolates agent execution in per-issue workspaces so agent commands run only inside per-issue
   workspace directories.
 - It keeps the workflow policy in-repo (`WORKFLOW.md`) so teams version the agent prompt and runtime
   settings with their code.
+- It separates planning from implementation so agents can discuss, refine, and document a plan in
+  the issue tracker before making implementation changes.
 - It provides enough observability to operate and debug multiple concurrent agent runs.
 
 Implementations are expected to document their trust and safety posture explicitly. This
@@ -36,8 +38,10 @@ stricter approvals or sandboxing.
 Important boundary:
 
 - Symphony is a scheduler/runner and tracker reader.
-- Ticket writes (state transitions, comments, PR links) are typically performed by the coding agent
-  using tools available in the workflow/runtime environment.
+- Planning-gate ticket writes (planning records, planning comments, and implementation
+  authorization detection) are core scheduler responsibilities.
+- Other ticket writes (state transitions, PR links, implementation progress comments) are typically
+  performed by the coding agent using tools available in the workflow/runtime environment.
 - A successful run can end at a workflow-defined handoff state (for example `Human Review`), not
   necessarily `Done`.
 
@@ -50,6 +54,8 @@ Important boundary:
 - Create deterministic per-issue workspaces and preserve them across runs.
 - Stop active runs when issue state changes make them ineligible.
 - Recover from transient failures with exponential backoff.
+- Require a planning gate before implementation, with the plan recorded on the tracker issue and an
+  explicit implementation authorization signal before implementation changes.
 - Load runtime behavior from a repository-owned `WORKFLOW.md` contract.
 - Expose operator-visible observability (at minimum structured logs).
 - Support tracker/filesystem-driven restart recovery without requiring a persistent database; exact
@@ -60,8 +66,8 @@ Important boundary:
 - Rich web UI or multi-tenant control plane.
 - Prescribing a specific dashboard or terminal UI implementation.
 - General-purpose workflow engine or distributed job scheduler.
-- Built-in business logic for how to edit tickets, PRs, or comments. (That logic lives in the
-  workflow prompt and agent tooling.)
+- Built-in business logic for implementation progress ticket writes, PR metadata, or final handoff
+  comments. (That logic lives in the workflow prompt and agent tooling.)
 - Mandating strong sandbox controls beyond what the coding agent and host OS provide.
 - Mandating a single default approval, sandbox, or operator-confirmation posture for all
   implementations.
@@ -332,6 +338,7 @@ Top-level keys:
 - `workspace`
 - `hooks`
 - `agent`
+- `planning`
 - `codex`
 
 Unknown keys SHOULD be ignored for forward compatibility.
@@ -424,7 +431,29 @@ Fields:
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
-#### 5.3.6 `codex` (object)
+#### 5.3.6 `planning` (object)
+
+Fields:
+
+- `assistant_mention` (string)
+  - Default: `@symphony`
+  - Used to detect explicit implementation authorization in the tracker issue discussion.
+  - Matching is case-insensitive after tracker-specific mention normalization.
+- `implementation_phrase` (string)
+  - Default: `implement`
+  - An implementation authorization signal MUST contain both the assistant mention and this phrase.
+- `authorized_requesters` (list of strings, OPTIONAL)
+  - Tracker user IDs, usernames, emails, or implementation-defined user refs allowed to authorize
+    implementation.
+  - When absent, the implementation MUST document its authorization policy.
+- `planning_record_location` (string)
+  - Default: `description`
+  - Supported values: `description`, `comment`.
+  - `description` means the canonical planning record is written to the issue description when the
+    tracker supports description updates.
+  - `comment` means the canonical planning record is appended as an issue comment.
+
+#### 5.3.7 `codex` (object)
 
 Fields:
 
@@ -587,6 +616,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `planning.assistant_mention`: string, default `@symphony`
+- `planning.implementation_phrase`: string, default `implement`
+- `planning.authorized_requesters`: list of requester refs or null
+- `planning.planning_record_location`: `description` or `comment`, default `description`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
@@ -806,6 +839,66 @@ When the service starts:
 3. If the terminal-issues fetch fails, log a warning and continue startup.
 
 This prevents stale terminal workspaces from accumulating after restarts.
+
+### 8.7 Planning Gate and Implementation Authorization
+
+Symphony uses a planning gate before implementation. The planning gate lets the service act as an
+engineering assistant in the issue tracker: it can inspect the issue and repository, discuss scope
+with a human operator, and record an implementation plan before any implementation changes happen.
+
+Planning-gated lifecycle:
+
+1. `Planning`
+   - Symphony analyzes the issue and repository.
+   - Symphony records a planning artifact on the tracker issue surface.
+   - Implementation changes are not allowed.
+2. `WaitingForImplementationAuthorization`
+   - Symphony has produced a plan and is waiting for an explicit authorization signal.
+   - Implementation changes are not allowed.
+3. `Implementing`
+   - Symphony has observed an explicit authorization signal and may run implementation turns.
+
+Planning artifact requirements:
+
+- The canonical plan MUST be written to the tracker issue surface, not to repository files.
+- If `planning.planning_record_location == "description"` and the tracker supports description
+  updates, the canonical plan MUST be written to the issue description.
+- Comments MAY be used for discussion, questions, audit history, and trackers that do not support
+  safe description updates.
+- Before implementation authorization, Symphony MUST NOT create, edit, or delete repository files
+  to store planning documentation or implement the issue.
+- Workspace population needed for inspection (for example cloning or dependency bootstrap) is not
+  considered implementation, but it MUST be documented and constrained by the workspace safety
+  invariants.
+- Before implementation authorization, Symphony MUST NOT create a pull request, mark the issue as
+  done, or make workflow-defined final handoff transitions.
+
+Authorization requirements:
+
+- Implementation MUST NOT start until Symphony observes an explicit implementation authorization
+  signal in the tracker issue discussion.
+- The default authorization signal is a tracker comment or equivalent discussion item containing
+  both `planning.assistant_mention` and `planning.implementation_phrase`, for example
+  `@symphony implement`.
+- Implementations MUST normalize tracker-specific mention syntax before matching when practical.
+- Implementations MUST document who is allowed to authorize implementation. If
+  `planning.authorized_requesters` is configured, authorization from any other requester MUST be
+  ignored and logged.
+- Assignment to the Symphony account, labels, or state changes MAY make an issue eligible for
+  planning, but they MUST NOT count as implementation authorization by themselves.
+
+Runner behavior:
+
+- A planning run MAY launch the coding-agent app-server in the issue workspace to inspect files and
+  produce analysis.
+- Planning runs SHOULD use a restrictive policy that prevents implementation changes. The exact
+  approval and sandbox posture is implementation-defined and MUST be documented.
+- If a planning run attempts implementation changes before authorization, the attempt MUST fail or
+  be blocked according to the implementation's documented policy.
+- After a planning run completes normally, Symphony SHOULD release or retry the issue according to
+  the normal scheduler rules while continuing to monitor for authorization.
+- Once authorization is observed, later worker attempts MAY enter implementation mode and follow the
+  normal agent runner contract.
 
 ## 9. Workspace Management and Safety
 
@@ -1121,10 +1214,14 @@ The `Agent Runner` wraps workspace + prompt + app-server client.
 Behavior:
 
 1. Create/reuse workspace for issue.
-2. Build prompt from workflow template.
-3. Start app-server session.
-4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+2. Determine whether the attempt is running in `planning` or `implementation` mode.
+3. Build prompt from workflow template using the selected mode.
+4. Start app-server session.
+5. Forward app-server events to orchestrator.
+6. In planning mode, capture the planning artifact and persist it through
+   `write_planning_record`.
+7. In implementation mode, run the normal implementation turn loop.
+8. On any error, fail the worker attempt (the orchestrator will retry).
 
 Note:
 
@@ -1145,6 +1242,18 @@ An implementation MUST support these tracker adapter operations:
 3. `fetch_issue_states_by_ids(issue_ids)`
    - Used for active-run reconciliation.
 
+4. `fetch_issue_discussion(issue_id)`
+   - Return issue description and discussion/comment items needed to detect implementation
+     authorization and preserve planning context.
+
+5. `write_planning_record(issue_id, content, location)`
+   - Persist the canonical planning artifact to the configured tracker issue surface.
+   - For Linear, `location == "description"` updates the issue description and `location ==
+     "comment"` appends an issue comment.
+
+6. `append_issue_comment(issue_id, content)`
+   - Used for planning questions, planning status updates, and authorization-related notices.
+
 ### 11.2 Query Semantics (Linear)
 
 Linear-specific requirements for `tracker.kind == "linear"`:
@@ -1155,6 +1264,10 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.project_slug` maps to Linear project `slugId`
 - Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
+- Issue discussion fetch includes the current description and comments or equivalent discussion
+  items needed for authorization detection.
+- Planning record writes with `location == "description"` update the Linear issue description.
+- Planning comments use Linear's issue comment mutation or equivalent supported API.
 - Pagination REQUIRED for candidate issues
 - Page size default: `50`
 - Network timeout: `30000 ms`
@@ -1190,24 +1303,32 @@ RECOMMENDED error categories:
 - `linear_graphql_errors`
 - `linear_unknown_payload`
 - `linear_missing_end_cursor` (pagination integrity error)
+- `tracker_write_failed`
+- `tracker_authorization_unavailable`
 
 Orchestrator behavior on tracker errors:
 
 - Candidate fetch failure: log and skip dispatch for this tick.
 - Running-state refresh failure: log and keep active workers running.
 - Startup terminal cleanup failure: log warning and continue startup.
+- Planning record write failure: fail the planning attempt and schedule retry.
+- Authorization fetch failure: do not enter implementation mode; retry on a later tick.
 
 ### 11.5 Tracker Writes (Important Boundary)
 
-Symphony does not require first-class tracker write APIs in the orchestrator.
+Symphony requires first-class tracker write support for the planning gate only.
 
-- Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
-  agent using tools defined by the workflow prompt.
+- The orchestrator or its planning-gate component MUST be able to write the planning record to the
+  configured tracker issue surface.
+- The orchestrator or its planning-gate component MUST be able to read issue discussion and detect
+  explicit implementation authorization.
+- Other ticket mutations (state transitions, PR metadata, implementation progress comments) are
+  typically handled by the coding agent using tools defined by the workflow prompt.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
 - If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
-  toolchain rather than orchestrator business logic.
+  toolchain and does not replace the orchestrator's planning-gate responsibilities.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -1218,6 +1339,12 @@ Inputs to prompt rendering:
 - `workflow.prompt_template`
 - normalized `issue` object
 - OPTIONAL `attempt` integer (retry/continuation metadata)
+- `mode` string
+  - `planning` before implementation authorization.
+  - `implementation` after explicit authorization.
+- `planning` object
+  - Includes implementation-defined planning context such as the current planning record,
+    authorization status, and authorization requester when available.
 
 ### 12.2 Rendering Rules
 
@@ -1234,6 +1361,7 @@ instructions for:
 - first run (`attempt` null or absent)
 - continuation run after a successful prior session
 - retry after error/timeout/stall
+- planning mode versus implementation mode
 
 ### 12.4 Failure Semantics
 
@@ -1810,6 +1938,12 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   if workspace failed:
     fail_worker("workspace error")
 
+  discussion = tracker.fetch_issue_discussion(issue.id)
+  if discussion failed:
+    fail_worker("issue discussion fetch error")
+
+  mode = determine_mode_from_planning_gate(issue, discussion, config.planning)
+
   if run_hook("before_run", workspace.path) failed:
     fail_worker("before_run hook error")
 
@@ -1822,7 +1956,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   turn_number = 1
 
   while true:
-    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
+    prompt = build_turn_prompt(workflow_template, issue, attempt, mode, turn_number, max_turns)
     if prompt failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
@@ -1839,6 +1973,14 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("agent turn error")
+
+    if mode == planning:
+      planning_record = extract_planning_record(turn_result)
+      if tracker.write_planning_record(issue.id, planning_record, config.planning.planning_record_location) failed:
+        app_server.stop_session(session)
+        run_hook_best_effort("after_run", workspace.path)
+        fail_worker("planning record write error")
+      break
 
     refreshed_issue = tracker.fetch_issue_states_by_ids([issue.id])
     if refreshed_issue failed:
@@ -1945,8 +2087,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
 - `codex.command` is preserved as a shell command string
+- Planning config defaults apply, including `@symphony`, `implement`, and `description`
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
+- Prompt template renders `mode` and planning context
 - Prompt rendering fails on unknown variables (strict mode)
 
 ### 17.2 Workspace Manager and Safety
@@ -1974,10 +2118,20 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Labels are normalized to lowercase
 - Issue state refresh by ID returns minimal normalized issues
 - Issue state refresh query uses GraphQL ID typing (`[ID!]`) as specified in Section 11.2
+- Issue discussion fetch returns description plus discussion/comment items needed for authorization
+- Planning record writes update the configured tracker location
+- Authorization matching handles the configured assistant mention and implementation phrase
 - Error mapping for request errors, non-200, GraphQL errors, malformed payloads
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
+- First eligible issue run enters planning mode before implementation mode
+- Planning output is persisted to the tracker issue surface, not repository files
+- Planning mode does not create, edit, or delete repository files to store planning docs or
+  implement the issue
+- Assignment, labels, and state changes do not count as implementation authorization by themselves
+- A configured unauthorized requester cannot authorize implementation
+- A valid authorization comment such as `@symphony implement` allows a later implementation attempt
 - Dispatch sort order is priority then oldest creation time
 - `Todo` issue with non-terminal blockers is not eligible
 - `Todo` issue with terminal blockers is eligible
@@ -2072,7 +2226,10 @@ Use the same validation profiles as Section 17:
 - Typed config layer with defaults and `$` resolution
 - Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
 - Polling orchestrator with single-authority mutable state
-- Issue tracker client with candidate fetch + state refresh + terminal fetch
+- Issue tracker client with candidate fetch + state refresh + terminal fetch + issue discussion
+  fetch + planning record writes
+- Planning gate that records plans on the tracker issue surface and blocks implementation changes
+  until explicit implementation authorization
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
