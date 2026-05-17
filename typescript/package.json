@@ -1,0 +1,28 @@
+{
+  "name": "@symphony/typescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "symphony": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --dir test",
+    "check": "npm run build && npm run test"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "liquidjs": "^10.20.0",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
