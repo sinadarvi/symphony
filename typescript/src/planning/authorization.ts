@@ -18,7 +18,7 @@ export function authorizeImplementation(
   const phrase = normalizeDiscussionText(config.implementationPhrase);
   const allowed = config.authorizedRequesters?.map((requester) => requester.toLowerCase()) ?? null;
 
-  for (const comment of comments) {
+  for (const comment of flattenDiscussionComments(comments)) {
     const body = normalizeDiscussionText(comment.body);
     if (!body.includes(mention) || !body.includes(phrase)) continue;
 
@@ -29,6 +29,10 @@ export function authorizeImplementation(
   }
 
   return { authorized: false };
+}
+
+export function flattenDiscussionComments(comments: DiscussionComment[]): DiscussionComment[] {
+  return comments.flatMap((comment) => [comment, ...flattenDiscussionComments(comment.replies ?? [])]);
 }
 
 export function normalizeDiscussionText(value: string): string {

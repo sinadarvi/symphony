@@ -23,6 +23,7 @@ export function normalizeLinearComment(raw: Record<string, unknown>): Discussion
   const user = record(raw.user);
   return {
     id: stringValue(raw.id),
+    parentId: nullableString(raw.parentId),
     body: stringValue(raw.body),
     createdAt: parseOptionalDate(raw.createdAt),
     author: {
@@ -30,7 +31,8 @@ export function normalizeLinearComment(raw: Record<string, unknown>): Discussion
       name: nullableString(user.name) ?? nullableString(user.displayName),
       email: nullableString(user.email),
       username: nullableString(user.displayName)
-    }
+    },
+    replies: nodes(raw.children).map(normalizeLinearComment)
   };
 }
 

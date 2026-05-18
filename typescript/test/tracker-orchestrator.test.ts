@@ -93,6 +93,116 @@ describe("Linear normalization and orchestration", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("fetches Linear comments with replies as discussion threads", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          issue: {
+            description: "Issue body",
+            comments: {
+              nodes: [
+                {
+                  id: "comment-1",
+                  body: "Top level",
+                  createdAt: "2026-05-17T10:00:00.000Z",
+                  user: { id: "u1", name: "User", email: "user@example.com", displayName: "user" },
+                  children: {
+                    nodes: [
+                      {
+                        id: "reply-1",
+                        parentId: "comment-1",
+                        body: "Reply",
+                        createdAt: "2026-05-17T10:05:00.000Z",
+                        user: { id: "u2", name: "Symphony", email: "symphony@example.com", displayName: "symphony" }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      })
+    });
+    const client = new LinearClient(
+      {
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    const discussion = await client.fetchIssueDiscussion("issue-1");
+
+    expect(discussion.comments).toHaveLength(1);
+    expect(discussion.comments[0].replies).toEqual([
+      {
+        id: "reply-1",
+        parentId: "comment-1",
+        body: "Reply",
+        createdAt: new Date("2026-05-17T10:05:00.000Z"),
+        author: { id: "u2", name: "Symphony", email: "symphony@example.com", username: "symphony" },
+        replies: []
+      }
+    ]);
+  });
+
+  it("can post Linear replies and move issues by state name", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { commentCreate: { success: true } } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            issue: {
+              team: {
+                states: {
+                  nodes: [
+                    { id: "state-1", name: "Todo" },
+                    { id: "state-2", name: "In Progress" }
+                  ]
+                }
+              }
+            }
+          }
+        })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { issueUpdate: { success: true } } })
+      });
+    const client = new LinearClient(
+      {
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    await client.appendIssueReply("issue-1", "comment-1", "Threaded response");
+    await client.moveIssueToState("issue-1", "In Progress");
+
+    const replyRequest = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect(replyRequest.variables).toEqual({ issueId: "issue-1", parentId: "comment-1", body: "Threaded response" });
+    const updateRequest = JSON.parse(fetchImpl.mock.calls[2][1].body as string);
+    expect(updateRequest.variables).toEqual({ id: "issue-1", stateId: "state-2" });
+  });
+
   it("sorts and filters dispatch candidates with blockers and concurrency limits", () => {
     const config = defaultEffectiveConfig({
       tracker: {

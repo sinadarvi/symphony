@@ -10,18 +10,22 @@ export function resolveConfig(
   env: NodeJS.ProcessEnv = process.env
 ): EffectiveConfig {
   const workflowDir = path.dirname(path.resolve(workflowPath));
+  const workflowStates = record(rawConfig.workflow_states);
   const tracker = record(rawConfig.tracker);
   const polling = record(rawConfig.polling);
   const workspace = record(rawConfig.workspace);
   const hooks = record(rawConfig.hooks);
   const agent = record(rawConfig.agent);
   const planning = record(rawConfig.planning);
+  const conversation = record(rawConfig.conversation);
+  const respondTo = record(conversation.respond_to);
   const codex = record(rawConfig.codex);
   const server = record(rawConfig.server);
 
   const kind = stringOrNull(tracker.kind);
   const config = defaultEffectiveConfig({
     workflowPath: path.resolve(workflowPath),
+    workflowStates: stringMap(workflowStates),
     tracker: {
       kind,
       endpoint: stringOrNull(tracker.endpoint) ?? (kind === "linear" || kind === null ? "https://api.linear.app/graphql" : ""),
@@ -55,6 +59,12 @@ export function resolveConfig(
       implementationPhrase: stringOrNull(planning.implementation_phrase) ?? "implement",
       authorizedRequesters: stringArray(planning.authorized_requesters),
       planningRecordLocation: planningRecordLocation(planning.planning_record_location)
+    },
+    conversation: {
+      assistantAuthors: stringArray(conversation.assistant_authors),
+      respondToComments: booleanOrDefault(respondTo.comments, true),
+      respondToReplies: booleanOrDefault(respondTo.replies, true),
+      sameThreadReplies: booleanOrDefault(conversation.same_thread_replies, true)
     },
     codex: {
       command: stringOrNull(codex.command) ?? "codex app-server",
@@ -110,6 +120,18 @@ function stringArray(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const strings = value.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
   return strings.length > 0 ? strings : null;
+}
+
+function stringMap(value: Record<string, unknown>): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string" && entry.trim() !== "") output[key] = entry;
+  }
+  return output;
+}
+
+function booleanOrDefault(value: unknown, defaultValue: boolean): boolean {
+  return typeof value === "boolean" ? value : defaultValue;
 }
 
 function integer(value: unknown): number | null {

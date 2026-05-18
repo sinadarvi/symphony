@@ -49,7 +49,16 @@ query SymphonyIssueDiscussion($id: String!) {
     id
     description
     comments(first: 50) {
-      nodes { id body createdAt user { id name email displayName } }
+      nodes {
+        id
+        parentId
+        body
+        createdAt
+        user { id name email displayName }
+        children(first: 50) {
+          nodes { id parentId body createdAt user { id name email displayName } }
+        }
+      }
     }
   }
 }`;
@@ -64,6 +73,31 @@ mutation SymphonyUpdateIssueDescription($id: String!, $description: String!) {
 export const createCommentMutation = `
 mutation SymphonyCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
+    success
+  }
+}`;
+
+export const createCommentReplyMutation = `
+mutation SymphonyCreateCommentReply($issueId: String!, $parentId: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueId, parentId: $parentId, body: $body }) {
+    success
+  }
+}`;
+
+export const issueWorkflowStatesQuery = `
+query SymphonyIssueWorkflowStates($id: String!) {
+  issue(id: $id) {
+    team {
+      states(first: 100) {
+        nodes { id name }
+      }
+    }
+  }
+}`;
+
+export const updateIssueStateMutation = `
+mutation SymphonyUpdateIssueState($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) {
     success
   }
 }`;
