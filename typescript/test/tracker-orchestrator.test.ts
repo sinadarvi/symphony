@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultEffectiveConfig } from "../src/config/defaults.js";
+import { formatErrorReport, SymphonyError } from "../src/shared/errors.js";
 import { LinearClient } from "../src/tracker/linear/client.js";
 import { normalizeLinearIssue } from "../src/tracker/linear/normalize.js";
 import { createInitialState } from "../src/orchestrator/state.js";
@@ -55,7 +56,7 @@ describe("Linear normalization and orchestration", () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({
+        text: async () => JSON.stringify({
           data: {
             issues: {
               nodes: [linearIssue("id-1", "SYM-1")],
@@ -67,7 +68,7 @@ describe("Linear normalization and orchestration", () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({
+        text: async () => JSON.stringify({
           data: {
             issues: {
               nodes: [linearIssue("id-2", "SYM-2")],
@@ -97,7 +98,7 @@ describe("Linear normalization and orchestration", () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         data: {
           issue: {
             description: "Issue body",
@@ -152,18 +153,72 @@ describe("Linear normalization and orchestration", () => {
     ]);
   });
 
+  it("formats Linear request failures with code and nested causes", async () => {
+    const rootCause = new Error("getaddrinfo ENOTFOUND api.linear.app");
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause: rootCause }));
+    const client = new LinearClient(
+      {
+        endpoint: "https://api.linear.app/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    await expect(client.fetchCandidateIssues()).rejects.toMatchObject({ code: "linear_api_request" });
+
+    try {
+      await client.fetchCandidateIssues();
+    } catch (error) {
+      expect(formatErrorReport(error)).toContain("code=linear_api_request");
+      expect(formatErrorReport(error)).toContain("cause=TypeError: fetch failed");
+      expect(formatErrorReport(error)).toContain("cause=getaddrinfo ENOTFOUND api.linear.app");
+    }
+  });
+
+  it("includes Linear HTTP error response bodies in formatted context", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => "{\"errors\":[{\"message\":\"Authentication required\"}]}"
+    });
+    const client = new LinearClient(
+      {
+        endpoint: "https://api.linear.app/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    await expect(client.fetchCandidateIssues()).rejects.toThrow(SymphonyError);
+
+    try {
+      await client.fetchCandidateIssues();
+    } catch (error) {
+      const report = formatErrorReport(error);
+      expect(report).toContain("code=linear_api_status");
+      expect(report).toContain("status\":401");
+      expect(report).toContain("Authentication required");
+    }
+  });
+
   it("can post Linear replies and move issues by state name", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ data: { commentCreate: { success: true } } })
+        text: async () => JSON.stringify({ data: { commentCreate: { success: true } } })
       })
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({
+        text: async () => JSON.stringify({
           data: {
             issue: {
               team: {
@@ -181,7 +236,7 @@ describe("Linear normalization and orchestration", () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ data: { issueUpdate: { success: true } } })
+        text: async () => JSON.stringify({ data: { issueUpdate: { success: true } } })
       });
     const client = new LinearClient(
       {

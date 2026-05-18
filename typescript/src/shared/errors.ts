@@ -41,3 +41,52 @@ export function toSymphonyError(error: unknown, code = "unknown_error"): Symphon
   if (error instanceof Error) return new SymphonyError(code, error.message, { cause: error });
   return new SymphonyError(code, String(error));
 }
+
+export function formatErrorReport(error: unknown): string {
+  const lines = [error instanceof Error ? error.message : String(error)];
+
+  if (error instanceof SymphonyError) {
+    lines.push(`code=${error.code}`);
+    if (error.context && Object.keys(error.context).length > 0) {
+      lines.push(`context=${JSON.stringify(sanitizeForLog(error.context))}`);
+    }
+  }
+
+  let cause = errorCause(error);
+  let depth = 0;
+  while (cause !== undefined && depth < 5) {
+    lines.push(`cause=${formatCause(cause)}`);
+    cause = errorCause(cause);
+    depth += 1;
+  }
+
+  return lines.join("\n");
+}
+
+function formatCause(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.name && cause.name !== "Error" ? `${cause.name}: ${cause.message}` : cause.message;
+  }
+  return String(cause);
+}
+
+function errorCause(value: unknown): unknown {
+  return typeof value === "object" && value !== null && "cause" in value ? (value as { cause?: unknown }).cause : undefined;
+}
+
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeForLog);
+  if (typeof value !== "object" || value === null) return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [
+      key,
+      isSecretKey(key) ? "[redacted]" : sanitizeForLog(nestedValue)
+    ])
+  );
+}
+
+function isSecretKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return normalized.includes("token") || normalized.includes("apikey") || normalized.includes("api_key") || normalized.includes("authorization");
+}

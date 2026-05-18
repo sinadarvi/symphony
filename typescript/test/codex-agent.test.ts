@@ -41,7 +41,7 @@ describe("Codex client and agent worker", () => {
     const workspace = path.join(dir, "workspace");
     await mkdir(workspace);
     const client = new CodexAppServerClient({
-      command: `node ${JSON.stringify(script)}`,
+      command: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
       readTimeoutMs: 1_000,
       turnTimeoutMs: 1_000,
       stallTimeoutMs: 0
@@ -69,7 +69,9 @@ describe("Codex client and agent worker", () => {
         "let buffer = '';",
         "let initialized = false;",
         "let threadStarted = false;",
-        "process.on('SIGTERM', () => { fs.writeFileSync(marker, 'stopped'); process.exit(0); });",
+        "function stop() { fs.writeFileSync(marker, 'stopped'); process.exit(0); }",
+        "process.on('SIGTERM', stop);",
+        "process.stdin.on('end', stop);",
         "process.stdin.on('data', (chunk) => {",
         "  buffer += chunk;",
         "  let index;",
@@ -93,7 +95,7 @@ describe("Codex client and agent worker", () => {
     const workspace = path.join(dir, "workspace");
     await mkdir(workspace);
     const client = new CodexAppServerClient({
-      command: `node ${JSON.stringify(script)}`,
+      command: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
       readTimeoutMs: 1_000,
       turnTimeoutMs: 1_000,
       stallTimeoutMs: 0
@@ -123,6 +125,24 @@ describe("Codex client and agent worker", () => {
       success: false
     });
     expect(await tool({ variables: [] })).toMatchObject({ success: false });
+  });
+
+  it("reports app-server launch failures instead of crashing on child process errors", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-codex-"));
+    const workspace = path.join(dir, "workspace");
+    await mkdir(workspace);
+    const client = new CodexAppServerClient({
+      command: "definitely-missing-codex-command app-server",
+      readTimeoutMs: 1_000,
+      turnTimeoutMs: 1_000,
+      stallTimeoutMs: 0
+    });
+
+    await expect(async () => {
+      for await (const _event of client.runTurn({ workspacePath: workspace, input: "hello" })) {
+        // no events expected
+      }
+    }).rejects.toMatchObject({ code: "process_exit" });
   });
 
   it("runs a planning worker and writes the planning record before authorization", async () => {

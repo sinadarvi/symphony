@@ -123,11 +123,15 @@ export class LinearClient implements IssueTrackerClient {
       throw new SymphonyError("linear_api_request", "Linear API request failed", { cause });
     }
 
+    const rawBody = await response.text();
+
     if (!response.ok) {
-      throw new SymphonyError("linear_api_status", `Linear API returned status ${response.status}`);
+      throw new SymphonyError("linear_api_status", `Linear API returned status ${response.status}`, {
+        context: { status: response.status, body: truncate(rawBody) }
+      });
     }
 
-    const payload = (await response.json()) as Record<string, unknown>;
+    const payload = parseJson(rawBody);
     if (Array.isArray(payload.errors) && payload.errors.length > 0) {
       throw new SymphonyError("linear_graphql_errors", "Linear GraphQL response included errors", { context: { errors: payload.errors } });
     }
@@ -152,4 +156,17 @@ function record(value: unknown): Record<string, unknown> {
 
 function nullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function parseJson(body: string): Record<string, unknown> {
+  try {
+    const payload = JSON.parse(body) as unknown;
+    return record(payload);
+  } catch (cause) {
+    throw new SymphonyError("linear_unknown_payload", "Linear API returned invalid JSON", { cause, context: { body: truncate(body) } });
+  }
+}
+
+function truncate(value: string, maxLength = 4_000): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
