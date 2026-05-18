@@ -8,6 +8,7 @@ import { Scheduler } from "./orchestrator/scheduler.js";
 import { AgentWorker } from "./agent/worker.js";
 import { Logger } from "./observability/logger.js";
 import { startHttpServer } from "./observability/http-server.js";
+import { formatErrorReport } from "./shared/errors.js";
 
 export type StartOptions = {
   workflowPath?: string;
@@ -42,7 +43,14 @@ export async function startSymphony(options: StartOptions = {}): Promise<void> {
     const result = await worker.run(issue, null);
     state.running.delete(issue.id);
     state.claimed.delete(issue.id);
-    logger.info("worker_exit", { issue_id: issue.id, issue_identifier: issue.identifier, status: result.status, mode: result.mode });
+    logger.info("worker_exit", {
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      status: result.status,
+      mode: result.mode,
+      reason: result.reason,
+      error: result.error ? formatErrorReport(result.error) : undefined
+    });
   });
 
   const port = options.port ?? config.server.port;

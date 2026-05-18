@@ -8,9 +8,11 @@ export type HookResult = {
 
 export async function runHook(script: string, cwd: string, timeoutMs: number): Promise<HookResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", ["-lc", script], {
+    const child = spawn(script, {
       cwd,
-      stdio: ["ignore", "pipe", "pipe"]
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
     });
     let stdout = "";
     let stderr = "";

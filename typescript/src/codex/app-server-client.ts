@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
+import { parseCommand } from "../shared/command.js";
 import { SymphonyError } from "../shared/errors.js";
 import { isTerminalCodexEvent, normalizeCodexEvent, record, type CodexRuntimeEvent } from "./events.js";
 import type { CodexSession, RunTurnInput } from "./protocol.js";
@@ -27,6 +28,7 @@ export class CodexAppServerClient implements CodexSession {
   private readonly waiters: Array<() => void> = [];
   private nextRequestId = 1;
   private initialized = false;
+  private startError: Error | null = null;
 
   constructor(private readonly config: CodexClientConfig) {}
 
@@ -97,10 +99,20 @@ export class CodexAppServerClient implements CodexSession {
 
   async stop(): Promise<void> {
     if (!this.child || this.child.killed || this.child.exitCode !== null) return;
-    this.child.kill("SIGTERM");
+    const child = this.child;
+    child.stdin.end();
+    const closed = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 250);
+      child.once("close", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+    if (closed || child.killed || child.exitCode !== null) return;
+    child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 250);
-      this.child?.once("close", () => {
+      child.once("close", () => {
         clearTimeout(timer);
         resolve();
       });
@@ -121,11 +133,16 @@ export class CodexAppServerClient implements CodexSession {
     this.buffer = "";
     this.stderr = "";
     this.closed = false;
+    this.startError = null;
     this.lines.splice(0);
     this.waiters.splice(0);
-    this.child = spawn("bash", ["-lc", this.config.command], {
+    const command = parseCommand(this.config.command);
+    const useShell = requiresShell(command.file);
+    this.child = spawn(useShell ? shellCommandLine(command.file, command.args) : command.file, useShell ? [] : command.args, {
       cwd: workspacePath,
-      stdio: ["pipe", "pipe", "pipe"]
+      shell: useShell,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
     });
     const child = this.child;
     child.stdout.on("data", (chunk: Buffer) => {
@@ -140,6 +157,11 @@ export class CodexAppServerClient implements CodexSession {
     });
     child.stderr.on("data", (chunk: Buffer) => {
       this.stderr = boundedAppend(this.stderr, chunk.toString("utf8"), 64 * 1024);
+    });
+    child.on("error", (cause) => {
+      this.closed = true;
+      this.startError = cause;
+      this.wake();
     });
     child.on("close", () => {
       this.closed = true;
@@ -186,6 +208,12 @@ export class CodexAppServerClient implements CodexSession {
       }
       const line = this.lines.shift();
       if (line == null) {
+        if (this.startError) {
+          throw new SymphonyError("process_exit", "Codex app-server failed to start", {
+            cause: this.startError,
+            context: { method, command: this.config.command, stderr: this.stderr }
+          });
+        }
         if (this.closed || child.exitCode !== null) {
           throw new SymphonyError("process_exit", "Codex app-server exited before responding", { context: { method, stderr: this.stderr } });
         }
@@ -230,4 +258,17 @@ export class CodexAppServerClient implements CodexSession {
 function boundedAppend(current: string, next: string, cap: number): string {
   const combined = current + next;
   return combined.length <= cap ? combined : combined.slice(combined.length - cap);
+}
+
+function requiresShell(file: string): boolean {
+  return process.platform === "win32" && [".bat", ".cmd"].includes(path.extname(file).toLowerCase());
+}
+
+function shellCommandLine(file: string, args: string[]): string {
+  return [file, ...args].map(quoteWindowsShellArg).join(" ");
+}
+
+function quoteWindowsShellArg(arg: string): string {
+  if (!/[()\s^&|<>"]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
 }

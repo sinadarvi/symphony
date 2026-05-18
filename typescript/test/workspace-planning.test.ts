@@ -17,7 +17,7 @@ describe("workspace and planning behavior", () => {
     const config = defaultEffectiveConfig({
       workspace: { root },
       hooks: {
-        afterCreate: "printf created >> marker.txt",
+        afterCreate: `node -e "require('node:fs').appendFileSync('marker.txt','created')"`,
         beforeRun: null,
         afterRun: null,
         beforeRemove: null,
