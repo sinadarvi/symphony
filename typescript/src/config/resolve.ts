@@ -51,6 +51,7 @@ export function resolveConfig(
     },
     planning: {
       assistantMention: stringOrNull(planning.assistant_mention) ?? "@symphony",
+      assistantAuthors: stringArray(planning.assistant_authors),
       implementationPhrase: stringOrNull(planning.implementation_phrase) ?? "implement",
       authorizedRequesters: stringArray(planning.authorized_requesters),
       planningRecordLocation: planningRecordLocation(planning.planning_record_location)

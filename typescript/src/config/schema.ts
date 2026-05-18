@@ -31,6 +31,7 @@ export type EffectiveConfig = {
   };
   planning: {
     assistantMention: string;
+    assistantAuthors: string[] | null;
     implementationPhrase: string;
     authorizedRequesters: string[] | null;
     planningRecordLocation: PlanningRecordLocation;

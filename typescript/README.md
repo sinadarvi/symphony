@@ -14,6 +14,30 @@ npm exec symphony ./WORKFLOW.md
 
 The CLI accepts an optional workflow path and defaults to `./WORKFLOW.md`.
 
+Create `typescript/.env` for local secrets that should be loaded automatically:
+
+```dotenv
+LINEAR_API_KEY=your-linear-api-key
+```
+
+Keep workflow config as an environment reference:
+
+```yaml
+tracker:
+  api_key: $LINEAR_API_KEY
+```
+
+To avoid re-running planning on the same ticket after Symphony has already posted the latest
+comment, configure the Linear author identity used by the Symphony token:
+
+```yaml
+planning:
+  assistant_authors:
+    - symphony@example.com
+    - symphony
+  planning_record_location: comment
+```
+
 ## Security Posture
 
 - Workflow hooks are trusted code and run with `bash -lc` in the issue workspace.

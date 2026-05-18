@@ -35,6 +35,7 @@ export function defaultEffectiveConfig(overrides: DeepPartial<EffectiveConfig> =
       },
       planning: {
         assistantMention: "@symphony",
+        assistantAuthors: null,
         implementationPhrase: "implement",
         authorizedRequesters: null,
         planningRecordLocation: "description"
