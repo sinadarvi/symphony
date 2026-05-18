@@ -119,6 +119,40 @@ describe("Linear normalization and orchestration", () => {
     }
   });
 
+  it("retries transient Linear request failures", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [linearIssue("id-1", "SYM-1")],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          })
+      });
+    const client = new LinearClient(
+      {
+        endpoint: "https://api.linear.app/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    const issues = await client.fetchCandidateIssues();
+
+    expect(issues.map((issue) => issue.identifier)).toEqual(["SYM-1"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("includes Linear HTTP error response bodies in formatted context", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,

@@ -22,6 +22,7 @@ export type LinearClientConfig = {
 
 export class LinearClient implements IssueTrackerClient {
   private readonly pageSize: number;
+  private readonly maxAttempts = 3;
 
   constructor(
     private readonly config: LinearClientConfig,
@@ -89,6 +90,22 @@ export class LinearClient implements IssueTrackerClient {
   }
 
   private async graphql(query: string, variables: Record<string, unknown>): Promise<Record<string, unknown>> {
+    let lastError: SymphonyError | null = null;
+
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        return await this.graphqlAttempt(query, variables);
+      } catch (error) {
+        if (!(error instanceof SymphonyError) || !isRetryableLinearError(error) || attempt === this.maxAttempts) throw error;
+        lastError = error;
+        await sleep(retryDelayMs(attempt));
+      }
+    }
+
+    throw lastError ?? new SymphonyError("linear_api_request", "Linear API request failed");
+  }
+
+  private async graphqlAttempt(query: string, variables: Record<string, unknown>): Promise<Record<string, unknown>> {
     let response: Response;
     try {
       response = await this.fetchImpl(this.config.endpoint, {
@@ -107,7 +124,7 @@ export class LinearClient implements IssueTrackerClient {
 
     if (!response.ok) {
       throw new SymphonyError("linear_api_status", `Linear API returned status ${response.status}`, {
-        context: { status: response.status, body: truncate(rawBody) }
+        context: { status: response.status, body: truncate(rawBody), retryable: isRetryableStatus(response.status) }
       });
     }
 
@@ -149,4 +166,23 @@ function parseJson(body: string): Record<string, unknown> {
 
 function truncate(value: string, maxLength = 4_000): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function isRetryableLinearError(error: SymphonyError): boolean {
+  if (error.code === "linear_api_request") return true;
+  if (error.code !== "linear_api_status") return false;
+  const status = error.context?.status;
+  return typeof status === "number" && isRetryableStatus(status);
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function retryDelayMs(attempt: number): number {
+  return attempt === 1 ? 500 : 1_500;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
