@@ -121,7 +121,7 @@ export class AgentWorker {
     const extracted = extractWorkflowActions(content);
     const formatted = formatPlanningRecord(extracted.actions.comment ?? extracted.body);
     const latestActivity = latestDiscussionActivity(discussion);
-    const parentId = extracted.actions.replyToCommentId ?? latestActivity?.parentId ?? null;
+    const parentId = extracted.actions.replyToCommentId ?? latestActivity?.parentId ?? latestActivity?.id ?? null;
     if (
       formatted &&
       parentId &&
