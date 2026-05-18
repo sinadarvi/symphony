@@ -2,15 +2,16 @@ import type { EffectiveConfig } from "../config/schema.js";
 import { renderPrompt } from "../workflow/template.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { authorizeImplementation } from "../planning/authorization.js";
-import { formatPlanningRecord } from "../planning/records.js";
+import { descriptionHasPlanningRecord, formatPlanningRecord, latestCommentIsPlanningRecord } from "../planning/records.js";
 import type { CodexRuntimeEvent } from "../codex/events.js";
 import type { CodexSession } from "../codex/protocol.js";
 import { CodexAppServerClient } from "../codex/app-server-client.js";
 import type { Issue, IssueTrackerClient } from "../tracker/types.js";
 
 export type AgentWorkerResult = {
-  status: "succeeded" | "failed";
+  status: "succeeded" | "failed" | "skipped";
   mode: "planning" | "implementation";
+  reason?: "planning_record_exists";
   error?: unknown;
 };
 
@@ -35,13 +36,27 @@ export class AgentWorker {
     let client: CodexSession | null = null;
 
     try {
+      const discussion = await this.options.tracker.fetchIssueDiscussion(issue.id);
+      if (
+        this.options.config.planning.planningRecordLocation === "comment" &&
+        latestCommentIsPlanningRecord(issue.identifier, discussion, this.options.config.planning)
+      ) {
+        return { status: "skipped", mode: "planning", reason: "planning_record_exists" };
+      }
+      const authorization = authorizeImplementation(discussion.comments, this.options.config.planning);
+      mode = authorization.authorized ? "implementation" : "planning";
+      if (
+        mode === "planning" &&
+        this.options.config.planning.planningRecordLocation === "description" &&
+        descriptionHasPlanningRecord(issue.identifier, discussion)
+      ) {
+        return { status: "skipped", mode: "planning", reason: "planning_record_exists" };
+      }
+
       const workspace = await this.workspaceManager.ensureForIssue(issue.identifier);
       workspacePath = workspace.path;
       await this.workspaceManager.runBeforeRun(workspacePath);
 
-      const discussion = await this.options.tracker.fetchIssueDiscussion(issue.id);
-      const authorization = authorizeImplementation(discussion.comments, this.options.config.planning);
-      mode = authorization.authorized ? "implementation" : "planning";
       const prompt = await renderPrompt(this.options.workflowPromptTemplate, {
         issue,
         attempt,

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { loadLocalEnv } from "./config/env.js";
 import { startSymphony } from "./main.js";
+
+loadLocalEnv({ moduleUrl: import.meta.url });
 
 const args = process.argv.slice(2);
 const workflowPath = args.find((arg) => !arg.startsWith("--"));

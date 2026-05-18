@@ -9,17 +9,33 @@ import { createLinearGraphqlTool } from "../src/codex/tools/linear-graphql.js";
 import type { Issue, IssueTrackerClient } from "../src/tracker/types.js";
 
 describe("Codex client and agent worker", () => {
-  it("runs a fake line-delimited app-server process and emits normalized events", async () => {
+  it("runs a fake JSON-RPC app-server process and emits normalized events", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-codex-"));
     const script = path.join(dir, "fake-app-server.mjs");
     await writeFile(
       script,
       [
-        "process.stdin.resume();",
-        "console.log(JSON.stringify({ event: 'session_started', thread_id: 't1' }));",
-        "console.log(JSON.stringify({ event: 'turn_started', turn_id: 'r1' }));",
-        "console.log(JSON.stringify({ event: 'thread/tokenUsage/updated', usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 } }));",
-        "console.log(JSON.stringify({ event: 'turn_completed', message: 'plan text' }));"
+        "process.stdin.setEncoding('utf8');",
+        "let buffer = '';",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer += chunk;",
+        "  let index;",
+        "  while ((index = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, index);",
+        "    buffer = buffer.slice(index + 1);",
+        "    if (!line.trim()) continue;",
+        "    const request = JSON.parse(line);",
+        "    if (request.method === 'initialize') console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake', codexHome: '/tmp', platformFamily: 'unix', platformOs: 'macos' } }));",
+        "    if (request.method === 'thread/start') console.log(JSON.stringify({ id: request.id, result: { thread: { id: 't1' } } }));",
+        "    if (request.method === 'turn/start') {",
+        "      console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'r1' } } }));",
+        "      console.log(JSON.stringify({ method: 'turn/started', params: { threadId: 't1', turn: { id: 'r1' } } }));",
+        "      console.log(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 't1', turnId: 'r1', tokenUsage: { total: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } } } }));",
+        "      console.log(JSON.stringify({ method: 'item/completed', params: { threadId: 't1', turnId: 'r1', item: { type: 'agentMessage', text: 'plan text' } } }));",
+        "      console.log(JSON.stringify({ method: 'turn/completed', params: { threadId: 't1', turn: { id: 'r1', status: 'completed' } } }));",
+        "    }",
+        "  }",
+        "});"
       ].join("\n")
     );
     const workspace = path.join(dir, "workspace");
@@ -36,12 +52,7 @@ describe("Codex client and agent worker", () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.event)).toEqual([
-      "session_started",
-      "turn_started",
-      "thread/tokenUsage/updated",
-      "turn_completed"
-    ]);
+    expect(events.map((event) => event.event)).toEqual(["turn/started", "thread/tokenUsage/updated", "item/completed", "turn/completed"]);
     expect(events.at(-1)?.sessionId).toBe("t1-r1");
   });
 
@@ -55,13 +66,27 @@ describe("Codex client and agent worker", () => {
         "import fs from 'node:fs';",
         `const marker = ${JSON.stringify(stopMarker)};`,
         "let turns = 0;",
-        "process.stdin.resume();",
+        "let buffer = '';",
+        "let initialized = false;",
+        "let threadStarted = false;",
         "process.on('SIGTERM', () => { fs.writeFileSync(marker, 'stopped'); process.exit(0); });",
-        "process.stdin.on('data', () => {",
-        "  turns += 1;",
-        "  if (turns === 1) console.log(JSON.stringify({ event: 'session_started', thread_id: 't1' }));",
-        "  console.log(JSON.stringify({ event: 'turn_started', turn_id: `r${turns}` }));",
-        "  console.log(JSON.stringify({ event: 'turn_completed', message: `turn ${turns}` }));",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer += chunk;",
+        "  let index;",
+        "  while ((index = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, index);",
+        "    buffer = buffer.slice(index + 1);",
+        "    if (!line.trim()) continue;",
+        "    const request = JSON.parse(line);",
+        "    if (request.method === 'initialize') { initialized = true; console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake', codexHome: '/tmp', platformFamily: 'unix', platformOs: 'macos' } })); }",
+        "    if (request.method === 'thread/start') { threadStarted = true; console.log(JSON.stringify({ id: request.id, result: { thread: { id: 't1' } } })); }",
+        "    if (request.method === 'turn/start') {",
+        "      turns += 1;",
+        "      console.log(JSON.stringify({ id: request.id, result: { turn: { id: `r${turns}` } } }));",
+        "      console.log(JSON.stringify({ method: 'turn/started', params: { threadId: 't1', turn: { id: `r${turns}` } } }));",
+        "      console.log(JSON.stringify({ method: 'turn/completed', params: { threadId: 't1', turn: { id: `r${turns}`, status: 'completed' } } }));",
+        "    }",
+        "  }",
         "});"
       ].join("\n")
     );
@@ -158,6 +183,157 @@ describe("Codex client and agent worker", () => {
 
     expect(result.status).toBe("succeeded");
     expect(writes).toEqual(["Planning artifact"]);
+  });
+
+  it("skips planning when the latest comment is an existing Symphony planning record", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment",
+        assistantAuthors: ["symphony@example.com"]
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Todo",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const tracker: Pick<IssueTrackerClient, "fetchIssueDiscussion" | "writePlanningRecord" | "fetchIssueStatesByIds"> = {
+      fetchIssueDiscussion: async () => ({
+        description: "",
+        comments: [
+          {
+            id: "comment-1",
+            body: "## Plan for SYM-1\n\nDo the thing.",
+            author: { email: "symphony@example.com" },
+            createdAt: new Date("2026-05-17T10:00:00Z")
+          }
+        ]
+      }),
+      writePlanningRecord: vi.fn(async () => undefined),
+      fetchIssueStatesByIds: async () => [issue]
+    };
+    const codexClientFactory = vi.fn();
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "Issue {{ issue.identifier }} mode {{ mode }}",
+      codexClientFactory
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result).toEqual({ status: "skipped", mode: "planning", reason: "planning_record_exists" });
+    expect(tracker.writePlanningRecord).not.toHaveBeenCalled();
+    expect(codexClientFactory).not.toHaveBeenCalled();
+  });
+
+  it("runs implementation when a human authorization is newer than the Symphony planning record", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Todo"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment",
+        assistantAuthors: ["symphony@example.com"]
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Todo",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const runTurn = vi.fn(async function* () {
+      yield { event: "turn_completed" as const, timestamp: new Date(), message: "done" };
+    });
+    const tracker: Pick<IssueTrackerClient, "fetchIssueDiscussion" | "writePlanningRecord" | "fetchIssueStatesByIds"> = {
+      fetchIssueDiscussion: async () => ({
+        description: "",
+        comments: [
+          {
+            id: "comment-1",
+            body: "## Plan for SYM-1\n\nDo the thing.",
+            author: { email: "symphony@example.com" },
+            createdAt: new Date("2026-05-17T10:00:00Z")
+          },
+          {
+            id: "comment-2",
+            body: "@symphony implement",
+            author: { email: "lead@example.com" },
+            createdAt: new Date("2026-05-17T11:00:00Z")
+          }
+        ]
+      }),
+      writePlanningRecord: vi.fn(async () => undefined),
+      fetchIssueStatesByIds: async () => []
+    };
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "Issue {{ issue.identifier }} mode {{ mode }}",
+      codexClientFactory: () => ({ runTurn, stop: async () => undefined })
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result.status).toBe("succeeded");
+    expect(result.mode).toBe("implementation");
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(tracker.writePlanningRecord).not.toHaveBeenCalled();
   });
 
   it("stops the codex session when an implementation worker finishes", async () => {

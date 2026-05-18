@@ -18,9 +18,12 @@ export type CodexRuntimeEvent = {
 };
 
 export function normalizeCodexEvent(raw: Record<string, unknown>, ids: { threadId: string | null; turnId: string | null; pid?: number | null }): CodexRuntimeEvent {
-  const event = stringValue(raw.event) || stringValue(raw.type) || "other_message";
-  const threadId = stringValue(raw.thread_id) || stringValue(raw.threadId) || ids.threadId;
-  const turnId = stringValue(raw.turn_id) || stringValue(raw.turnId) || ids.turnId;
+  const params = record(raw.params) ?? {};
+  const event = stringValue(raw.event) || stringValue(raw.method) || stringValue(raw.type) || "other_message";
+  const turn = record(params.turn) ?? {};
+  const item = record(params.item) ?? {};
+  const threadId = stringValue(raw.thread_id) || stringValue(raw.threadId) || stringValue(params.threadId) || ids.threadId;
+  const turnId = stringValue(raw.turn_id) || stringValue(raw.turnId) || stringValue(params.turnId) || stringValue(turn.id) || ids.turnId;
   return {
     event,
     timestamp: new Date(),
@@ -29,14 +32,23 @@ export function normalizeCodexEvent(raw: Record<string, unknown>, ids: { threadI
     sessionId: threadId && turnId ? `${threadId}-${turnId}` : null,
     codexAppServerPid: ids.pid ?? null,
     usage: extractUsage(raw),
-    rateLimits: raw.rate_limits ?? raw.rateLimits ?? null,
-    message: typeof raw.message === "string" ? raw.message : typeof raw.content === "string" ? raw.content : undefined,
+    rateLimits: raw.rate_limits ?? raw.rateLimits ?? params.rateLimits ?? null,
+    message:
+      typeof raw.message === "string"
+        ? raw.message
+        : typeof raw.content === "string"
+          ? raw.content
+          : typeof params.delta === "string"
+            ? params.delta
+            : typeof item.text === "string"
+              ? item.text
+              : undefined,
     payload: raw
   };
 }
 
 export function isTerminalCodexEvent(event: CodexRuntimeEvent): boolean {
-  return ["turn_completed", "turn_failed", "turn_cancelled", "turn_ended_with_error", "turn_input_required"].includes(event.event);
+  return ["turn_completed", "turn/completed", "turn_failed", "turn_cancelled", "turn_ended_with_error", "turn_input_required"].includes(event.event);
 }
 
 function extractUsage(raw: Record<string, unknown>): CodexUsage | undefined {
@@ -49,7 +61,7 @@ function extractUsage(raw: Record<string, unknown>): CodexUsage | undefined {
   return { inputTokens, outputTokens, totalTokens };
 }
 
-function record(value: unknown): Record<string, unknown> | null {
+export function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
