@@ -38,6 +38,38 @@ planning:
   planning_record_location: comment
 ```
 
+Project-specific workflows should keep deterministic wiring in YAML and describe behavior in the
+Markdown prompt body:
+
+```yaml
+workflow_states:
+  idea: Idea
+  planning: Planning
+  ready: Todo
+  implementing: In Progress
+  done: Done
+
+conversation:
+  assistant_authors:
+    - symphony@example.com
+    - symphony
+  respond_to:
+    comments: true
+    replies: true
+  same_thread_replies: true
+```
+
+The prompt can request tracker actions by ending with a fenced action block. Symphony strips the
+block before posting the comment and applies the action through the tracker:
+
+````md
+Understanding confirmed.
+
+```symphony-actions
+move_to_state: Planning
+```
+````
+
 ## Security Posture
 
 - Workflow hooks are trusted code and run with `bash -lc` in the issue workspace.

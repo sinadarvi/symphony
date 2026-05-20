@@ -4,9 +4,12 @@ import type { Issue, IssueDiscussion, IssueTrackerClient } from "../types.js";
 import {
   candidateIssuesQuery,
   createCommentMutation,
+  createCommentReplyMutation,
   issueDiscussionQuery,
+  issueWorkflowStatesQuery,
   issuesByStatesQuery,
   issueStatesByIdsQuery,
+  updateIssueStateMutation,
   updateIssueDescriptionMutation
 } from "./queries.js";
 import { normalizeLinearComment, normalizeLinearIssue } from "./normalize.js";
@@ -70,6 +73,23 @@ export class LinearClient implements IssueTrackerClient {
 
   async appendIssueComment(issueId: string, content: string): Promise<void> {
     await this.graphql(createCommentMutation, { issueId, body: content });
+  }
+
+  async appendIssueReply(issueId: string, parentCommentId: string, content: string): Promise<void> {
+    await this.graphql(createCommentReplyMutation, { issueId, parentId: parentCommentId, body: content });
+  }
+
+  async moveIssueToState(issueId: string, stateName: string): Promise<void> {
+    const payload = await this.graphql(issueWorkflowStatesQuery, { id: issueId });
+    const issue = record(record(payload.data).issue);
+    const team = record(issue.team);
+    const states = nodes(record(team.states));
+    const state = states.find((candidate) => nullableString(candidate.name)?.toLowerCase() === stateName.toLowerCase());
+    const stateId = nullableString(state?.id);
+    if (!stateId) {
+      throw new SymphonyError("linear_state_not_found", `Linear workflow state not found: ${stateName}`);
+    }
+    await this.graphql(updateIssueStateMutation, { id: issueId, stateId });
   }
 
   private async fetchPagedIssues(query: string, variables: Record<string, unknown>): Promise<Issue[]> {

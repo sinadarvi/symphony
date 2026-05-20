@@ -2,11 +2,17 @@ import type { EffectiveConfig } from "../config/schema.js";
 import { renderPrompt } from "../workflow/template.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { authorizeImplementation } from "../planning/authorization.js";
-import { descriptionHasPlanningRecord, formatPlanningRecord, latestCommentIsPlanningRecord } from "../planning/records.js";
+import {
+  descriptionHasPlanningRecord,
+  formatPlanningRecord,
+  latestCommentIsPlanningRecord,
+  latestDiscussionActivity
+} from "../planning/records.js";
 import type { CodexRuntimeEvent } from "../codex/events.js";
 import type { CodexSession } from "../codex/protocol.js";
 import { CodexAppServerClient } from "../codex/app-server-client.js";
-import type { Issue, IssueTrackerClient } from "../tracker/types.js";
+import type { Issue, IssueDiscussion, IssueTrackerClient } from "../tracker/types.js";
+import { extractWorkflowActions, type WorkflowActions } from "../workflow/actions.js";
 
 export type AgentWorkerResult = {
   status: "succeeded" | "failed" | "skipped";
@@ -17,7 +23,8 @@ export type AgentWorkerResult = {
 
 export type AgentWorkerOptions = {
   config: EffectiveConfig;
-  tracker: Pick<IssueTrackerClient, "fetchIssueDiscussion" | "writePlanningRecord" | "fetchIssueStatesByIds">;
+  tracker: Pick<IssueTrackerClient, "fetchIssueDiscussion" | "writePlanningRecord" | "fetchIssueStatesByIds"> &
+    Partial<Pick<IssueTrackerClient, "appendIssueReply" | "appendIssueComment" | "moveIssueToState">>;
   workflowPromptTemplate: string;
   codexClientFactory?: () => CodexSession;
   onEvent?: (event: CodexRuntimeEvent) => void;
@@ -37,6 +44,7 @@ export class AgentWorker {
 
     try {
       const discussion = await this.options.tracker.fetchIssueDiscussion(issue.id);
+      const latestActivity = latestDiscussionActivity(discussion);
       if (
         this.options.config.planning.planningRecordLocation === "comment" &&
         latestCommentIsPlanningRecord(issue.identifier, discussion, this.options.config.planning)
@@ -64,6 +72,18 @@ export class AgentWorker {
         planning: {
           authorization,
           discussion
+        },
+        workflowStates: this.options.config.workflowStates,
+        conversation: {
+          ...this.options.config.conversation,
+          discussion,
+          latest: latestActivity
+            ? {
+                ...latestActivity,
+                parentId: latestActivity.parentId ?? null,
+                author: latestActivity.author ?? {}
+              }
+            : null
         }
       });
 
@@ -80,7 +100,7 @@ export class AgentWorker {
         }
 
         if (mode === "planning") {
-          await this.options.tracker.writePlanningRecord(issue.id, formatPlanningRecord(planningRecord), this.options.config.planning.planningRecordLocation);
+          await this.writePlanningResponse(issue.id, discussion, planningRecord);
           break;
         }
 
@@ -95,5 +115,31 @@ export class AgentWorker {
       await client?.stop();
       if (workspacePath) await this.workspaceManager.runAfterRun(workspacePath);
     }
+  }
+
+  private async writePlanningResponse(issueId: string, discussion: IssueDiscussion, content: string): Promise<void> {
+    const extracted = extractWorkflowActions(content);
+    const formatted = formatPlanningRecord(extracted.actions.comment ?? extracted.body);
+    const latestActivity = latestDiscussionActivity(discussion);
+    const parentId = extracted.actions.replyToCommentId ?? latestActivity?.parentId ?? latestActivity?.id ?? null;
+    if (
+      formatted &&
+      parentId &&
+      this.options.config.conversation.sameThreadReplies &&
+      this.options.config.conversation.respondToReplies &&
+      this.options.config.planning.planningRecordLocation === "comment" &&
+      this.options.tracker.appendIssueReply
+    ) {
+      await this.options.tracker.appendIssueReply(issueId, parentId, formatted);
+      await this.applyWorkflowActions(issueId, extracted.actions);
+      return;
+    }
+
+    await this.options.tracker.writePlanningRecord(issueId, formatted, this.options.config.planning.planningRecordLocation);
+    await this.applyWorkflowActions(issueId, extracted.actions);
+  }
+
+  private async applyWorkflowActions(issueId: string, actions: WorkflowActions): Promise<void> {
+    if (actions.moveToState) await this.options.tracker.moveIssueToState?.(issueId, actions.moveToState);
   }
 }

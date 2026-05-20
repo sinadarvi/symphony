@@ -77,6 +77,43 @@ describe("workflow loading and config resolution", () => {
     expect(validateDispatchConfig(config)).toEqual([]);
   });
 
+  it("resolves workflow states and conversation settings without encoding a fixed process", () => {
+    const config = resolveConfig(
+      {
+        workflow_states: {
+          idea: "Idea",
+          planning: "Planning",
+          ready: "Todo",
+          implementing: "In Progress",
+          done: "Done"
+        },
+        conversation: {
+          assistant_authors: ["symphony@example.com", "symphony"],
+          respond_to: {
+            comments: true,
+            replies: true
+          },
+          same_thread_replies: true
+        }
+      },
+      "/tmp/WORKFLOW.md"
+    );
+
+    expect(config.workflowStates).toEqual({
+      idea: "Idea",
+      planning: "Planning",
+      ready: "Todo",
+      implementing: "In Progress",
+      done: "Done"
+    });
+    expect(config.conversation).toEqual({
+      assistantAuthors: ["symphony@example.com", "symphony"],
+      respondToComments: true,
+      respondToReplies: true,
+      sameThreadReplies: true
+    });
+  });
+
   it("rejects invalid numeric config values instead of silently defaulting them", () => {
     expect(() =>
       resolveConfig(

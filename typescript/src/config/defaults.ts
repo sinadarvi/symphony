@@ -6,6 +6,7 @@ export function defaultEffectiveConfig(overrides: DeepPartial<EffectiveConfig> =
   return deepMerge(
     {
       workflowPath: path.resolve("WORKFLOW.md"),
+      workflowStates: {},
       tracker: {
         kind: null,
         endpoint: "https://api.linear.app/graphql",
@@ -39,6 +40,12 @@ export function defaultEffectiveConfig(overrides: DeepPartial<EffectiveConfig> =
         implementationPhrase: "implement",
         authorizedRequesters: null,
         planningRecordLocation: "description"
+      },
+      conversation: {
+        assistantAuthors: null,
+        respondToComments: true,
+        respondToReplies: true,
+        sameThreadReplies: true
       },
       codex: {
         command: "codex app-server",

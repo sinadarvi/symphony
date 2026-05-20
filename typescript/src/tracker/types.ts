@@ -30,9 +30,11 @@ export type DiscussionAuthor = {
 
 export type DiscussionComment = {
   id: string;
+  parentId?: string | null;
   body: string;
   author?: DiscussionAuthor | null;
   createdAt?: Date | null;
+  replies?: DiscussionComment[];
 };
 
 export type IssueDiscussion = {
@@ -47,4 +49,6 @@ export interface IssueTrackerClient {
   fetchIssueDiscussion(issueId: string): Promise<IssueDiscussion>;
   writePlanningRecord(issueId: string, content: string, location: PlanningRecordLocation): Promise<void>;
   appendIssueComment(issueId: string, content: string): Promise<void>;
+  appendIssueReply(issueId: string, parentCommentId: string, content: string): Promise<void>;
+  moveIssueToState(issueId: string, stateName: string): Promise<void>;
 }

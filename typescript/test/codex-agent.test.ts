@@ -205,6 +205,355 @@ describe("Codex client and agent worker", () => {
     expect(writes).toEqual(["Planning artifact"]);
   });
 
+  it("replies in the same discussion thread when the latest human activity is a reply", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Idea"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        assistantAuthors: ["symphony@example.com"],
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment"
+      },
+      conversation: {
+        assistantAuthors: ["symphony@example.com"],
+        respondToComments: true,
+        respondToReplies: true,
+        sameThreadReplies: true
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Idea",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const replies: Array<{ parentId: string; content: string }> = [];
+    const tracker: Pick<
+      IssueTrackerClient,
+      "fetchIssueDiscussion" | "writePlanningRecord" | "appendIssueReply" | "fetchIssueStatesByIds"
+    > = {
+      fetchIssueDiscussion: async () => ({
+        description: "",
+        comments: [
+          {
+            id: "comment-1",
+            body: "What should we build?",
+            author: { email: "lead@example.com" },
+            createdAt: new Date("2026-05-17T10:00:00Z"),
+            replies: [
+              {
+                id: "reply-1",
+                parentId: "comment-1",
+                body: "Clarifying answer",
+                author: { email: "lead@example.com" },
+                createdAt: new Date("2026-05-17T10:05:00Z"),
+                replies: []
+              }
+            ]
+          }
+        ]
+      }),
+      writePlanningRecord: async () => {
+        throw new Error("expected threaded reply");
+      },
+      appendIssueReply: async (_issueId, parentId, content) => {
+        replies.push({ parentId, content });
+      },
+      fetchIssueStatesByIds: async () => [issue]
+    };
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "State {{ issue.state }} latest {{ conversation.latest.body }}",
+      codexClientFactory: () => ({
+        runTurn: async function* () {
+          yield { event: "turn_completed", timestamp: new Date(), message: "Threaded response" };
+        },
+        stop: async () => undefined
+      })
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result.status).toBe("succeeded");
+    expect(replies).toEqual([{ parentId: "comment-1", content: "Threaded response" }]);
+  });
+
+  it("replies to the latest top-level comment instead of creating a new top-level comment", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Idea"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        assistantAuthors: ["symphony@example.com"],
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment"
+      },
+      conversation: {
+        assistantAuthors: ["symphony@example.com"],
+        respondToComments: true,
+        respondToReplies: true,
+        sameThreadReplies: true
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Idea",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const replies: Array<{ parentId: string; content: string }> = [];
+    const tracker: Pick<
+      IssueTrackerClient,
+      "fetchIssueDiscussion" | "writePlanningRecord" | "appendIssueReply" | "fetchIssueStatesByIds"
+    > = {
+      fetchIssueDiscussion: async () => ({
+        description: "",
+        comments: [
+          {
+            id: "comment-1",
+            body: "Can you clarify this?",
+            author: { email: "lead@example.com" },
+            createdAt: new Date("2026-05-17T10:00:00Z"),
+            replies: []
+          }
+        ]
+      }),
+      writePlanningRecord: async () => {
+        throw new Error("expected top-level comment reply");
+      },
+      appendIssueReply: async (_issueId, parentId, content) => {
+        replies.push({ parentId, content });
+      },
+      fetchIssueStatesByIds: async () => [issue]
+    };
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "State {{ issue.state }} latest {{ conversation.latest.body }}",
+      codexClientFactory: () => ({
+        runTurn: async function* () {
+          yield { event: "turn_completed", timestamp: new Date(), message: "Top-level response" };
+        },
+        stop: async () => undefined
+      })
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result.status).toBe("succeeded");
+    expect(replies).toEqual([{ parentId: "comment-1", content: "Top-level response" }]);
+  });
+
+  it("skips when the latest discussion activity is a Symphony-authored reply", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Idea"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        assistantAuthors: ["symphony@example.com"],
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment"
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Idea",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const codexClientFactory = vi.fn();
+    const tracker: Pick<IssueTrackerClient, "fetchIssueDiscussion" | "writePlanningRecord" | "fetchIssueStatesByIds"> = {
+      fetchIssueDiscussion: async () => ({
+        description: "",
+        comments: [
+          {
+            id: "comment-1",
+            body: "Question",
+            author: { email: "lead@example.com" },
+            createdAt: new Date("2026-05-17T10:00:00Z"),
+            replies: [
+              {
+                id: "reply-1",
+                parentId: "comment-1",
+                body: "Symphony response",
+                author: { email: "symphony@example.com" },
+                createdAt: new Date("2026-05-17T10:05:00Z"),
+                replies: []
+              }
+            ]
+          }
+        ]
+      }),
+      writePlanningRecord: vi.fn(async () => undefined),
+      fetchIssueStatesByIds: async () => [issue]
+    };
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "Issue {{ issue.identifier }}",
+      codexClientFactory
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result).toEqual({ status: "skipped", mode: "planning", reason: "planning_record_exists" });
+    expect(tracker.writePlanningRecord).not.toHaveBeenCalled();
+    expect(codexClientFactory).not.toHaveBeenCalled();
+  });
+
+  it("applies workflow action blocks without posting the action syntax to Linear", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
+    const config = defaultEffectiveConfig({
+      workspace: { root },
+      tracker: {
+        kind: "linear",
+        endpoint: "https://linear.test/graphql",
+        apiKey: "secret",
+        projectSlug: "proj",
+        activeStates: ["Idea"],
+        terminalStates: ["Done"]
+      },
+      hooks: {
+        afterCreate: null,
+        beforeRun: null,
+        afterRun: null,
+        beforeRemove: null,
+        timeoutMs: 1_000
+      },
+      planning: {
+        assistantMention: "@symphony",
+        assistantAuthors: ["symphony@example.com"],
+        implementationPhrase: "implement",
+        authorizedRequesters: null,
+        planningRecordLocation: "comment"
+      }
+    });
+    const issue: Issue = {
+      id: "id-1",
+      identifier: "SYM-1",
+      title: "Title",
+      description: null,
+      priority: null,
+      state: "Idea",
+      branchName: null,
+      url: null,
+      labels: [],
+      blockedBy: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    const writes: string[] = [];
+    const moves: string[] = [];
+    const tracker: Pick<
+      IssueTrackerClient,
+      "fetchIssueDiscussion" | "writePlanningRecord" | "moveIssueToState" | "fetchIssueStatesByIds"
+    > = {
+      fetchIssueDiscussion: async () => ({ description: "", comments: [] }),
+      writePlanningRecord: async (_issueId, content) => {
+        writes.push(content);
+      },
+      moveIssueToState: async (_issueId, stateName) => {
+        moves.push(stateName);
+      },
+      fetchIssueStatesByIds: async () => [issue]
+    };
+    const worker = new AgentWorker({
+      config,
+      tracker,
+      workflowPromptTemplate: "Issue {{ issue.identifier }}",
+      codexClientFactory: () => ({
+        runTurn: async function* () {
+          yield {
+            event: "turn_completed",
+            timestamp: new Date(),
+            message: ["Understanding confirmed.", "```symphony-actions", "move_to_state: Planning", "```"].join("\n")
+          };
+        },
+        stop: async () => undefined
+      })
+    });
+
+    const result = await worker.run(issue, null);
+
+    expect(result.status).toBe("succeeded");
+    expect(writes).toEqual(["Understanding confirmed."]);
+    expect(moves).toEqual(["Planning"]);
+  });
+
   it("skips planning when the latest comment is an existing Symphony planning record", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "symphony-agent-"));
     const config = defaultEffectiveConfig({

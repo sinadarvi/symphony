@@ -1,4 +1,5 @@
 import type { DiscussionAuthor, IssueDiscussion } from "../tracker/types.js";
+import { flattenDiscussionComments } from "./authorization.js";
 
 export function formatPlanningRecord(content: string): string {
   return content.trim();
@@ -13,7 +14,7 @@ export function latestCommentIsPlanningRecord(
   discussion: IssueDiscussion,
   config: PlanningRecordDetectionConfig
 ): boolean {
-  const latest = latestComment(discussion.comments);
+  const latest = latestDiscussionActivity(discussion);
   if (!latest) return false;
 
   return isAssistantAuthor(latest.author, config.assistantAuthors) || hasPlanningRecordMarker(issueIdentifier, latest.body);
@@ -21,6 +22,10 @@ export function latestCommentIsPlanningRecord(
 
 export function descriptionHasPlanningRecord(issueIdentifier: string, discussion: IssueDiscussion): boolean {
   return hasPlanningRecordMarker(issueIdentifier, discussion.description ?? "");
+}
+
+export function latestDiscussionActivity(discussion: IssueDiscussion) {
+  return latestComment(flattenDiscussionComments(discussion.comments));
 }
 
 function latestComment<T extends { createdAt?: Date | null }>(comments: T[]): T | null {

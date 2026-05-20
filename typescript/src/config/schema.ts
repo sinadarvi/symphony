@@ -2,6 +2,7 @@ export type PlanningRecordLocation = "description" | "comment";
 
 export type EffectiveConfig = {
   workflowPath: string;
+  workflowStates: Record<string, string>;
   tracker: {
     kind: string | null;
     endpoint: string;
@@ -35,6 +36,12 @@ export type EffectiveConfig = {
     implementationPhrase: string;
     authorizedRequesters: string[] | null;
     planningRecordLocation: PlanningRecordLocation;
+  };
+  conversation: {
+    assistantAuthors: string[] | null;
+    respondToComments: boolean;
+    respondToReplies: boolean;
+    sameThreadReplies: boolean;
   };
   codex: {
     command: string;
